@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Fitness Assistant</string>
+    <string name="gyms">Gyms Near Me</string>
+</resources>
