@@ -3,6 +3,7 @@ package jamalian.sina.fitnessassistant;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
 import android.location.Location;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
@@ -33,13 +34,28 @@ import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 
-import jamalian.sina.fitnessassistant.R;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
+
+import static jamalian.sina.fitnessassistant.R.id.map;
+
 
 /**
- * An activity that displays a map showing the place at the device's current location.
+ * This activity opens a map at the user's current location and shows nearby gyms.
  */
 public class GymActivity extends AppCompatActivity
         implements OnMapReadyCallback,
+        GoogleMap.OnCameraIdleListener,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener {
 
@@ -52,7 +68,9 @@ public class GymActivity extends AppCompatActivity
 
     // A default location (Sydney, Australia) and default zoom to use when location permission is
     // not granted.
-    private final LatLng mDefaultLocation = new LatLng(-33.8523341, 151.2106085);
+    private double lat = -33.8523341;
+    private double lng = 151.2106085;
+    private final LatLng mDefaultLocation = new LatLng(lat, lng);
     private static final int DEFAULT_ZOOM = 15;
     private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 1;
     private boolean mLocationPermissionGranted;
@@ -71,6 +89,8 @@ public class GymActivity extends AppCompatActivity
     private String[] mLikelyPlaceAddresses = new String[mMaxEntries];
     private String[] mLikelyPlaceAttributions = new String[mMaxEntries];
     private LatLng[] mLikelyPlaceLatLngs = new LatLng[mMaxEntries];
+
+    private String findGymsUrl;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -117,7 +137,7 @@ public class GymActivity extends AppCompatActivity
     public void onConnected(Bundle connectionHint) {
         // Build the map.
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
-                .findFragmentById(R.id.map);
+                .findFragmentById(map);
         mapFragment.getMapAsync(this);
     }
 
@@ -198,15 +218,160 @@ public class GymActivity extends AppCompatActivity
             }
         });
 
-        LatLng test = new LatLng(43.9273288,-79.4559649);
-        mMap.addMarker(new MarkerOptions().position(test)
-                .title("Test Marker"));
+        // Set a camera listener to add new markers if the user moves the map around.
+        mMap.setOnCameraIdleListener(this);
 
         // Turn on the My Location layer and the related control on the map.
         updateLocationUI();
 
         // Get the current location of the device and set the position of the map.
         getDeviceLocation();
+
+        // Retrieve and display nearby gyms.
+        getGyms();
+    }
+
+    /**
+     * Finds nearby gyms and adds markers to the map.
+     */
+    public void getGyms() {
+        findGymsUrl = "https://maps.googleapis.com/maps/api/place/nearbysearch/" +
+                "json?location="+mMap.getCameraPosition().target.latitude+","+mMap.getCameraPosition().target.longitude+
+                "&rankby=distance&sensor=true" +
+                "&types=gym"+
+                "&key="+"AIzaSyBF8cNquS3oGV87GI4gIBhywxNBKs86ljk";
+
+        // Execute a new AsyncTask to find nearby gyms.
+        new GetGymsTask().execute(findGymsUrl);
+    }
+
+    /**
+     * The camera has stopped moving so add the new nearby gym markers.
+     */
+    @Override
+    public void onCameraIdle() {
+        getGyms();
+    }
+
+    /**
+     * Retrieves nearby gym information in a background thread then adds the markers to the map.
+     *
+     * Extends AsyncTask<param1, param2, param3> where parameters represent:
+     * param1: Params - type of parameters sent to task upon execution
+     * param2: Progress - type of progress units published during background computation
+     * param3: Result - the type of the result of the background computation
+     *
+     * doInBackground gets the nearby gyms information where the return type (String) matches Result.
+     *
+     * onPostExecute takes Result as its String parameter to create the markers on the map.
+     *
+     */
+    private class GetGymsTask extends AsyncTask<String, Void, String> {
+
+        @Override
+        protected String doInBackground(String... params) {
+            // The url being searched to get nearby gyms information.
+            String urlString = params[0];
+
+            // Used to establish a connection to the given URL and retrieve the information.
+            HttpURLConnection urlConnection = null;
+            InputStream in;
+            String data;
+
+            try {
+                // Establish a connection to Google Maps API.
+                URL url = new URL(urlString);
+                urlConnection = (HttpURLConnection)url.openConnection();
+                urlConnection.connect();
+
+                // Reads input stream in bytes and decodes into characters.
+                in = new BufferedInputStream(urlConnection.getInputStream());
+                data = readStream(in);
+
+                // Result is the returned value, which is onPostExecute's parameter.
+                return data;
+            } catch (MalformedURLException e) {
+                e.printStackTrace();
+                return null;
+            } catch (IOException e) {
+                e.printStackTrace();
+                return null;
+            } finally {
+                // Closes the connection.
+                if (urlConnection != null) {
+                    urlConnection.disconnect();
+                }
+            }
+        }
+
+        @Override
+        protected void onPostExecute(String s) {
+            super.onPostExecute(s);
+
+            // Connection was not established successfully.
+            if (s == null) {
+                return;
+            }
+
+            try {
+                createMarkersFromJson(s);
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    /**
+     * Reads input stream in bytes and decodes into characters which is returned as a String.
+     *
+     * @param in The input stream from the URL.
+     * @return The String representation of the input stream.
+     * @throws IOException
+     */
+    private String readStream(InputStream in) throws IOException {
+        // Converts byte stream into character stream.
+        BufferedReader r = new BufferedReader(new InputStreamReader(in));
+
+        StringBuilder sb = new StringBuilder();
+        String line;
+
+        // Reads every line and stores them in sb.
+        while((line = r.readLine()) != null) {
+            sb.append(line);
+        }
+
+        // Closes the input stream.
+        in.close();
+
+        return sb.toString();
+    }
+
+    /**
+     * Creates markers on the map given the JSON String containing the nearby gyms information.
+     *
+     * @param json The JSON String containing the nearby gyms information.
+     * @throws JSONException
+     */
+    private void createMarkersFromJson(String json) throws JSONException {
+        // The JSON object containing the received information.
+        JSONObject rootJSON = new JSONObject(json);
+
+        // The results array containing gym objects.
+        JSONArray resultsJSON = rootJSON.getJSONArray("results");
+
+        // Create a new marker for each gym.
+        for (int i = 0; i < resultsJSON.length(); i++) {
+            JSONObject jsonObj = resultsJSON.getJSONObject(i);
+
+            mMap.addMarker(new MarkerOptions()
+                    .title(jsonObj.getString("name"))
+                    .snippet(jsonObj.getString("vicinity"))
+                    .position(new LatLng(
+                            jsonObj.getJSONObject("geometry").getJSONObject("location").getDouble("lat"),
+                            jsonObj.getJSONObject("geometry").getJSONObject("location").getDouble("lng")
+                    ))
+            );
+        }
     }
 
     /**
@@ -232,18 +397,18 @@ public class GymActivity extends AppCompatActivity
          * cases when a location is not available.
          */
         if (mLocationPermissionGranted) {
-            Log.d("MyTag", "Permission");
             mLastKnownLocation = LocationServices.FusedLocationApi
                     .getLastLocation(mGoogleApiClient);
         }
+
+        lat = mLastKnownLocation.getLatitude();
+        lng = mLastKnownLocation.getLongitude();
 
         // Set the map's camera position to the current location of the device.
         if (mCameraPosition != null) {
             mMap.moveCamera(CameraUpdateFactory.newCameraPosition(mCameraPosition));
         } else if (mLastKnownLocation != null) {
-            mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                    new LatLng(mLastKnownLocation.getLatitude(),
-                            mLastKnownLocation.getLongitude()), DEFAULT_ZOOM));
+            mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(lat, lng), DEFAULT_ZOOM));
         } else {
             Log.d(TAG, "Current location is null. Using defaults.");
             mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(mDefaultLocation, DEFAULT_ZOOM));
