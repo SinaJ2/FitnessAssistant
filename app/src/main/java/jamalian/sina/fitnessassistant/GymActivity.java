@@ -1,8 +1,10 @@
 package jamalian.sina.fitnessassistant;
 
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Location;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
@@ -16,6 +18,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -47,6 +50,7 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 
+import static android.R.attr.key;
 import static jamalian.sina.fitnessassistant.R.id.map;
 
 
@@ -56,41 +60,50 @@ import static jamalian.sina.fitnessassistant.R.id.map;
 public class GymActivity extends AppCompatActivity
         implements OnMapReadyCallback,
         GoogleMap.OnCameraIdleListener,
+        GoogleMap.OnInfoWindowClickListener,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener {
 
+    // The tag used for logging.
     private static final String TAG = GymActivity.class.getSimpleName();
+
+    // A default zoom.
+    private static final int DEFAULT_ZOOM = 13;
+
+    // For requesting location permissions.
+    private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 1;
+
+    // Keys for storing activity state.
+    private static final String KEY_CAMERA_POSITION = "camera_position";
+    private static final String KEY_LOCATION = "location";
+
+    // The Google map and camera objects.
     private GoogleMap mMap;
     private CameraPosition mCameraPosition;
 
     // The entry point to Google Play services, used by the Places API and Fused Location Provider.
     private GoogleApiClient mGoogleApiClient;
 
-    // A default location (Sydney, Australia) and default zoom to use when location permission is
-    // not granted.
-    private double lat = -33.8523341;
-    private double lng = 151.2106085;
-    private final LatLng mDefaultLocation = new LatLng(lat, lng);
-    private static final int DEFAULT_ZOOM = 15;
-    private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 1;
+    // The latitude and longitude for the desired location.
+    private double lat;
+    private double lng;
+
+    // A flag to indicate if location permissions have been granted.
     private boolean mLocationPermissionGranted;
 
     // The geographical location where the device is currently located. That is, the last-known
     // location retrieved by the Fused Location Provider.
     private Location mLastKnownLocation;
 
-    // Keys for storing activity state.
-    private static final String KEY_CAMERA_POSITION = "camera_position";
-    private static final String KEY_LOCATION = "location";
-
     // Used for selecting the current place.
-    private final int mMaxEntries = 5;
-    private String[] mLikelyPlaceNames = new String[mMaxEntries];
-    private String[] mLikelyPlaceAddresses = new String[mMaxEntries];
-    private String[] mLikelyPlaceAttributions = new String[mMaxEntries];
-    private LatLng[] mLikelyPlaceLatLngs = new LatLng[mMaxEntries];
+    private int mMaxEntries;
+    private String[] mLikelyPlaceNames;
+    private String[] mLikelyPlaceAddresses;
+    private String[] mLikelyPlaceAttributions;
+    private LatLng[] mLikelyPlaceLatLngs;
 
-    private String findGymsUrl;
+    // The API key needed to use Google Places API.
+    private String apiKey;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -104,6 +117,20 @@ public class GymActivity extends AppCompatActivity
 
         // Retrieve the content view that renders the map.
         setContentView(R.layout.activity_gym);
+
+        // Set the initial latitude and longitude to an arbitrary location (Sydney, Australia).
+        // This location will be used if the user does not grant location permissions.
+        lat = -33.8523341;
+        lng = 151.2106085;
+
+        // Used for selecting the current place.
+        mMaxEntries = 5;
+        mLikelyPlaceNames = new String[mMaxEntries];
+        mLikelyPlaceAddresses = new String[mMaxEntries];
+        mLikelyPlaceAttributions = new String[mMaxEntries];
+        mLikelyPlaceLatLngs = new LatLng[mMaxEntries];
+
+        apiKey = "AIzaSyBF8cNquS3oGV87GI4gIBhywxNBKs86ljk";
 
         // Build the Play services client for use by the Fused Location Provider and the Places API.
         // Use the addApi() method to request the Google Places API and the Fused Location Provider.
@@ -221,6 +248,9 @@ public class GymActivity extends AppCompatActivity
         // Set a camera listener to add new markers if the user moves the map around.
         mMap.setOnCameraIdleListener(this);
 
+        // Set a listener to see if the user has pressed on the marker's info window.
+        mMap.setOnInfoWindowClickListener(this);
+
         // Turn on the My Location layer and the related control on the map.
         updateLocationUI();
 
@@ -235,14 +265,17 @@ public class GymActivity extends AppCompatActivity
      * Finds nearby gyms and adds markers to the map.
      */
     public void getGyms() {
-        findGymsUrl = "https://maps.googleapis.com/maps/api/place/nearbysearch/" +
+        // For testing:
+        // https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=43.9287854,-79.4567106&rankby=distance&sensor=true&types=gym&key=AIzaSyBF8cNquS3oGV87GI4gIBhywxNBKs86ljk
+
+        String findGymsUrl = "https://maps.googleapis.com/maps/api/place/nearbysearch/"+
                 "json?location="+mMap.getCameraPosition().target.latitude+","+mMap.getCameraPosition().target.longitude+
-                "&rankby=distance&sensor=true" +
+                "&rankby=distance&sensor=true"+
                 "&types=gym"+
-                "&key="+"AIzaSyBF8cNquS3oGV87GI4gIBhywxNBKs86ljk";
+                "&key="+apiKey;
 
         // Execute a new AsyncTask to find nearby gyms.
-        new GetGymsTask().execute(findGymsUrl);
+        new GetGymsTask().execute(findGymsUrl, "marker");
     }
 
     /**
@@ -251,6 +284,24 @@ public class GymActivity extends AppCompatActivity
     @Override
     public void onCameraIdle() {
         getGyms();
+    }
+
+    /**
+     * The marker's info window has been pressed by the user, so show a detailed page for the gym.
+     * @param marker The gynm's marker pressed by the user.
+     */
+    @Override
+    public void onInfoWindowClick(Marker marker) {
+        // Allow the user to go to the gym's website if there's one available.
+        if (marker.getTag() != null) {
+            String gymUrl = "https://maps.googleapis.com/maps/api/place/details/json?placeid="+marker.getTag()+"&key="+apiKey;
+
+            // Execute a new AsyncTask to get the website for the selected gym.
+            new GetGymsTask().execute(gymUrl, "website");
+        }
+        else {
+            Toast.makeText(this, "No website available.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     /**
@@ -263,15 +314,22 @@ public class GymActivity extends AppCompatActivity
      *
      * doInBackground gets the nearby gyms information where the return type (String) matches Result.
      *
-     * onPostExecute takes Result as its String parameter to create the markers on the map.
+     * onPostExecute takes Result as its String parameter to create the markers on the map or provides
+     *               additional details of a specific marker based on the flag given.
      *
      */
     private class GetGymsTask extends AsyncTask<String, Void, String> {
+
+        private String flag;
 
         @Override
         protected String doInBackground(String... params) {
             // The url being searched to get nearby gyms information.
             String urlString = params[0];
+
+            // marker flag will add the markers to the map.
+            // website flag will go to the gym's website if available.
+            flag = params[1];
 
             // Used to establish a connection to the given URL and retrieve the information.
             HttpURLConnection urlConnection = null;
@@ -314,7 +372,14 @@ public class GymActivity extends AppCompatActivity
             }
 
             try {
-                createMarkersFromJson(s);
+                // Adds the markers to the map.
+                if (flag.equals("marker")) {
+                    createMarkersFromJson(s);
+                }
+                // Goes to the gym's website if available.
+                else if (flag.equals("website")) {
+                    goToWebsite(s);
+                }
             } catch (JSONException e) {
                 e.printStackTrace();
             }
@@ -363,7 +428,7 @@ public class GymActivity extends AppCompatActivity
         for (int i = 0; i < resultsJSON.length(); i++) {
             JSONObject jsonObj = resultsJSON.getJSONObject(i);
 
-            mMap.addMarker(new MarkerOptions()
+            Marker marker = mMap.addMarker(new MarkerOptions()
                     .title(jsonObj.getString("name"))
                     .snippet(jsonObj.getString("vicinity"))
                     .position(new LatLng(
@@ -371,6 +436,35 @@ public class GymActivity extends AppCompatActivity
                             jsonObj.getJSONObject("geometry").getJSONObject("location").getDouble("lng")
                     ))
             );
+
+            // Set the place ID as the tag.
+            marker.setTag(jsonObj.getString("place_id"));
+        }
+    }
+
+    /**
+     * Creates an intent to go to the gym's website.
+     *
+     * @param json The JSON String containing the selected gym details.
+     * @throws JSONException
+     */
+    private void goToWebsite(String json) throws JSONException {
+        // The JSON object containing the received information.
+        JSONObject rootJSON = new JSONObject(json);
+
+        // The result object containing detail objects for the gym.
+        JSONObject resultJSON = rootJSON.getJSONObject("result");
+
+        // Allow the user to go to the gym's website if there's one available.
+        if (resultJSON.has("website")) {
+            String website = resultJSON.getString("website");
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse(website));
+            startActivity(intent);
+        }
+        else {
+            Toast.makeText(this, "No website available.", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -411,7 +505,7 @@ public class GymActivity extends AppCompatActivity
             mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(lat, lng), DEFAULT_ZOOM));
         } else {
             Log.d(TAG, "Current location is null. Using defaults.");
-            mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(mDefaultLocation, DEFAULT_ZOOM));
+            mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(lat, lng), DEFAULT_ZOOM));
             mMap.getUiSettings().setMyLocationButtonEnabled(false);
         }
     }
@@ -484,7 +578,7 @@ public class GymActivity extends AppCompatActivity
             // Add a default marker, because the user hasn't selected a place.
             mMap.addMarker(new MarkerOptions()
                     .title(getString(R.string.default_info_title))
-                    .position(mDefaultLocation)
+                    .position(new LatLng(lat, lng))
                     .snippet(getString(R.string.default_info_snippet)));
         }
     }
